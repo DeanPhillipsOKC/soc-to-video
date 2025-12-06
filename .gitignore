@@ -1,0 +1,21 @@
+# Environment variables (contains API keys - DO NOT COMMIT)
+.env
+
+# Character descriptions (may contain personal info)
+characters.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/
+
+# Output folders
+video_*/
