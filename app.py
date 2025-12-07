@@ -49,6 +49,13 @@ openai_key = st.sidebar.text_input(
 st.title("🎬 Grief Video Generator")
 st.markdown("Transform your stream of consciousness into video-ready content")
 
+# Video vs Image toggle
+media_type = st.radio(
+    "Output type",
+    options=["Images", "Videos"],
+    help="Images are fast and cheap. Videos are high-quality but take much longer (potentially hours) and cost more."
+)
+
 # Character info input (optional)
 with st.expander("📝 Character Information (Optional)", expanded=False):
     st.markdown("Add descriptions of people who might appear in your narrative. This helps generate accurate image prompts.")
@@ -160,17 +167,159 @@ Return only the JSON array, no markdown formatting."""
     
     return json.loads(response_text.strip())
 
+def generate_video(prompt, scene_text, api_key, scene_num, output_folder, status_callback=None):
+    """Generate video using Veo with extensions to reach target duration"""
+    import time
+    from google.api_core import exceptions as google_exceptions
+    
+    client = genai.Client(api_key=api_key)
+    
+    def retry_on_rate_limit(api_call, max_retries=5, initial_delay=30):
+        """Retry an API call with exponential backoff on rate limit errors"""
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                return api_call()
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a rate limit error (429 or RESOURCE_EXHAUSTED)
+                if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
+                    if attempt < max_retries - 1:
+                        if status_callback:
+                            status_callback(f"Scene {scene_num}: Rate limit hit. Waiting {delay}s before retry {attempt + 1}/{max_retries}...")
+                        time.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        if status_callback:
+                            status_callback(f"Scene {scene_num}: Rate limit - max retries reached")
+                        raise
+                else:
+                    # Not a rate limit error, raise immediately
+                    raise
+        return None
+    
+    # Calculate target duration based on word count (2.5 words/second speaking rate)
+    word_count = len(scene_text.split())
+    target_seconds = word_count / 2.5
+    
+    # Clamp to reasonable bounds
+    target_seconds = max(8, min(target_seconds, 60))  # Between 8-60 seconds
+    
+    if status_callback:
+        status_callback(f"Scene {scene_num}: {word_count} words → targeting {target_seconds:.1f}s")
+    
+    # Add no-text instruction
+    enhanced_prompt = f"{prompt}. IMPORTANT: Do not include any text, words, letters, or numbers in the video."
+    
+    # Generate initial 8-second video
+    if status_callback:
+        status_callback(f"Scene {scene_num}: Generating initial 8s video...")
+    
+    def make_initial_video():
+        return client.models.generate_videos(
+            model="veo-3.1-fast-generate-preview",
+            prompt=enhanced_prompt,
+            config={"duration_seconds": 8}
+        )
+    
+    operation = retry_on_rate_limit(make_initial_video)
+    
+    # Poll until ready
+    while not operation.done:
+        time.sleep(10)
+        operation = client.operations.get(operation)
+    
+    current_duration = 8
+    current_video = operation.response.generated_videos[0].video
+    
+    # Calculate extensions needed
+    remaining_seconds = target_seconds - 8
+    extensions_needed = max(0, int(remaining_seconds / 7) + (1 if remaining_seconds % 7 > 0 else 0))
+    
+    if status_callback:
+        status_callback(f"Scene {scene_num}: Need {extensions_needed} extensions to reach {target_seconds:.1f}s")
+    
+    # Wait for video to be fully processed on Google's servers before extending
+    if extensions_needed > 0:
+        if status_callback:
+            status_callback(f"Scene {scene_num}: Waiting for video to be processed before extending...")
+        time.sleep(30)  # Give Google's servers time to process the video
+    
+    # Extend until we reach target duration
+    for ext_num in range(extensions_needed):
+        if status_callback:
+            status_callback(f"Scene {scene_num}: Extension {ext_num + 1}/{extensions_needed}...")
+        
+        # Extension prompt should describe continuation, not repeat original
+        extend_prompt = "Continue this video naturally, maintaining the same visual style and mood. Keep the camera movement and composition consistent with what came before. IMPORTANT: Do not include any text, words, letters, or numbers in the video."
+        
+        def make_extension():
+            return client.models.generate_videos(
+                model="veo-3.1-fast-generate-preview",
+                video=current_video,
+                prompt=extend_prompt,
+            )
+        
+        operation = retry_on_rate_limit(make_extension)
+        
+        # Poll until ready
+        while not operation.done:
+            time.sleep(10)
+            operation = client.operations.get(operation)
+        
+        current_video = operation.response.generated_videos[0].video
+        current_duration += 7
+    
+    # Download final video
+    if status_callback:
+        status_callback(f"Scene {scene_num}: Downloading final {current_duration}s video...")
+    
+    video_path = output_folder / f"scene_{scene_num:02d}.mp4"
+    client.files.download(file=current_video)
+    current_video.save(str(video_path))
+    
+    return video_path, current_duration
+
 def generate_image(prompt, api_key, scene_num, output_folder):
     """Generate image using Gemini (nano banana)"""
+    import time
+    
     client = genai.Client(api_key=api_key)
+    
+    def retry_on_rate_limit(api_call, max_retries=5, initial_delay=30):
+        """Retry an API call with exponential backoff on rate limit errors"""
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                return api_call()
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a rate limit error (429 or RESOURCE_EXHAUSTED)
+                if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
+                    if attempt < max_retries - 1:
+                        print(f"Scene {scene_num}: Rate limit hit. Waiting {delay}s before retry {attempt + 1}/{max_retries}...")
+                        time.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        print(f"Scene {scene_num}: Rate limit - max retries reached")
+                        raise
+                else:
+                    # Not a rate limit error, raise immediately
+                    raise
+        return None
     
     # Add explicit instruction to avoid text in images
     enhanced_prompt = f"{prompt}. IMPORTANT: Do not include any text, words, letters, or numbers in the image."
     
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-image",
-        contents=[enhanced_prompt],
-    )
+    def make_image():
+        return client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[enhanced_prompt],
+        )
+    
+    response = retry_on_rate_limit(make_image)
     
     # Extract and save image
     image_path = output_folder / f"scene_{scene_num:02d}.png"
@@ -401,19 +550,40 @@ if st.session_state.scenes:
         # Track failures
         failed_images = []
         
-        # Step 1: Generate all images
-        status_text.text("🎨 Generating images...")
+        # Step 1: Generate all media (images or videos)
+        status_text.text(f"🎨 Generating {media_type.lower()}...")
         for i, scene in enumerate(st.session_state.scenes):
             scene_num = scene['scene_number']
             
-            status_text.text(f"🎨 Generating image {i+1}/{len(st.session_state.scenes)} (scene {scene_num})...")
-            try:
-                generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
-                progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 3))  # +3 for audio steps
-            except Exception as e:
-                st.error(f"❌ Error generating image for scene {scene_num}: {str(e)}")
-                failed_images.append(scene_num)
-                progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 3))
+            if media_type == "Videos":
+                status_text.text(f"🎥 Generating video {i+1}/{len(st.session_state.scenes)} (scene {scene_num})...")
+                try:
+                    def video_status(msg):
+                        status_text.caption(msg)
+                    
+                    video_path, final_duration = generate_video(
+                        scene['image_prompt'], 
+                        scene['text'],
+                        google_key, 
+                        scene_num, 
+                        output_folder,
+                        status_callback=video_status
+                    )
+                    st.success(f"✅ Scene {scene_num} complete: {final_duration}s video generated")
+                    progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 1))
+                except Exception as e:
+                    st.error(f"❌ Error generating video for scene {scene_num}: {str(e)}")
+                    failed_images.append(scene_num)
+                    progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 1))
+            else:  # Images
+                status_text.text(f"🎨 Generating image {i+1}/{len(st.session_state.scenes)} (scene {scene_num})...")
+                try:
+                    generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
+                    progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 1))
+                except Exception as e:
+                    st.error(f"❌ Error generating image for scene {scene_num}: {str(e)}")
+                    failed_images.append(scene_num)
+                    progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 1))
         
         # Step 2: Generate full narrative audio
         status_text.text("🎙️ Generating complete audio narrative...")
@@ -428,18 +598,21 @@ if st.session_state.scenes:
         
         status_text.text("✅ Generation complete!")
         
-        # Retry failed images
+        # Retry failed media
         if failed_images:
-            st.warning(f"Retrying {len(failed_images)} failed image(s)...")
-            status_text.text("🔄 Retrying failed images...")
+            st.warning(f"Retrying {len(failed_images)} failed {media_type.lower()}...")
+            status_text.text(f"🔄 Retrying failed {media_type.lower()}...")
             
             retry_failures = []
             for scene_num in failed_images:
                 scene = next(s for s in st.session_state.scenes if s['scene_number'] == scene_num)
-                status_text.text(f"🔄 Retrying image for scene {scene_num}...")
+                status_text.text(f"🔄 Retrying {media_type.lower()[:-1]} for scene {scene_num}...")
                 try:
-                    generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
-                    st.success(f"✅ Successfully generated image for scene {scene_num} on retry")
+                    if media_type == "Videos":
+                        generate_video(scene['image_prompt'], scene['text'], google_key, scene_num, output_folder)
+                    else:
+                        generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
+                    st.success(f"✅ Successfully generated {media_type.lower()[:-1]} for scene {scene_num} on retry")
                 except Exception as e:
                     st.error(f"❌ Scene {scene_num} failed again: {str(e)}")
                     retry_failures.append(scene_num)
@@ -454,7 +627,7 @@ if st.session_state.scenes:
         else:
             st.warning(f"Generation completed with some errors. Files saved to: {output_folder}")
             if failed_images:
-                st.error(f"Failed images (after retry) for scenes: {', '.join(map(str, failed_images))}")
+                st.error(f"Failed {media_type.lower()} (after retry) for scenes: {', '.join(map(str, failed_images))}")
             if not audio_success:
                 st.error("Audio generation failed - check errors above")
 
@@ -465,10 +638,10 @@ if st.session_state.output_folder:
     st.code(str(st.session_state.output_folder))
     st.info("Drag this folder into CapCut to start editing!")
     
-    # Image regeneration section
+    # Media regeneration section
     st.markdown("---")
-    st.subheader("🔄 Regenerate Individual Images")
-    st.markdown("Don't like a specific image? Generate a new one with a custom prompt.")
+    st.subheader("🔄 Regenerate Individual Media")
+    st.markdown("Don't like a specific image or video? Generate a new one with a custom prompt.")
     
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -505,16 +678,28 @@ if st.session_state.output_folder:
             help="The instruction to avoid text/words will be added automatically"
         )
     
-    if st.button("🎨 Regenerate This Image", type="secondary"):
+    if st.button("🎨 Regenerate This Media", type="secondary"):
         if not custom_prompt.strip():
             st.error("Please enter a custom prompt")
         elif not google_key:
             st.error("Google API key required")
         else:
-            with st.spinner(f"Regenerating image for scene {scene_to_regen}..."):
+            # Detect if we're working with images or videos
+            current_file_path = st.session_state.output_folder / f"scene_{scene_to_regen:02d}.mp4"
+            is_video = current_file_path.exists()
+            media_label = "video" if is_video else "image"
+            
+            with st.spinner(f"Regenerating {media_label} for scene {scene_to_regen}..."):
                 try:
-                    generate_image(custom_prompt, google_key, scene_to_regen, st.session_state.output_folder)
-                    st.success(f"✅ Successfully regenerated scene {scene_to_regen}!")
+                    if is_video:
+                        scene = next((s for s in st.session_state.scenes if s['scene_number'] == scene_to_regen), None)
+                        if scene:
+                            generate_video(custom_prompt, scene['text'], google_key, scene_to_regen, st.session_state.output_folder)
+                        else:
+                            st.error("Could not find scene data")
+                    else:
+                        generate_image(custom_prompt, google_key, scene_to_regen, st.session_state.output_folder)
+                    st.success(f"✅ Successfully regenerated scene {scene_to_regen} {media_label}!")
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
 

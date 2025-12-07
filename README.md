@@ -56,14 +56,17 @@ All API keys are loaded from the `.env` file - just fill that in and you're read
 ## Workflow
 
 1. Paste your raw thoughts into the text area
-2. (Optional) Add character descriptions in the expandable section
-3. Enter your API keys in the sidebar
-4. Click "Generate Narrative" - review the poetic version (editable)
-5. Click "Break Into Scenes" - see the scene breakdown
-6. Click "Generate All Assets" - creates images + one continuous audio file
-7. (Optional) Regenerate individual images with custom prompts if you don't like them
-8. Output folder appears in `/mnt/user-data/outputs/video_TIMESTAMP/`
-9. Import into CapCut and sync the continuous audio with your image timeline
+2. **Choose output type**: Images (fast, cheap) or Videos (high-quality, slower, more expensive)
+3. (Optional) Add character descriptions in the expandable section
+4. Enter your API keys in the sidebar
+5. Click "Generate Narrative" - review the poetic version (editable)
+6. Click "Break Into Scenes" - see the scene breakdown
+7. Click "Generate All Assets" - creates media + one continuous audio file
+   - **Videos**: Duration is estimated from word count. Longer scenes require multiple API calls (extensions) and may take several minutes each. A full video project could take hours.
+   - **Images**: Fast generation, typically seconds per image.
+8. (Optional) Regenerate individual media with custom prompts if you don't like them
+9. Output folder appears in `/mnt/user-data/outputs/video_TIMESTAMP/`
+10. Import into CapCut and sync the continuous audio with your media timeline
 
 ### Character Information (Optional)
 
@@ -82,6 +85,29 @@ When the AI creates image generation prompts, it will reference these descriptio
 
 The app generates the entire narrative as one continuous audio file, which preserves natural prosody, emotional flow, and prevents the robotic/disjointed quality of generating scenes separately. You'll manually sync this with your images in CapCut, giving you full creative control over timing and pacing.
 
+### Video Generation
+
+**NEW:** Generate videos instead of static images using Google's Veo 3.1 Fast API.
+
+**How it works:**
+- Uses the fast Veo 3.1 model for better cost/performance balance
+- The app estimates video duration based on word count (average speaking rate: 2.5 words/second)
+- Scenes longer than 8 seconds require video extensions:
+  - Initial video: 8 seconds
+  - Each extension: adds 7 seconds
+  - Example: A 25-second scene requires 1 initial generation + 3 extensions = 4 API calls
+- Videos are generated with the same abstract, contemplative visual style as images
+- No text/words appear in videos
+
+**Important considerations:**
+- **Time**: Each API call takes 11 seconds to 6 minutes. A 16-scene video with extensions could take **several hours** to generate.
+- **Cost**: Veo 3.1 API calls are more expensive than image generation. Check [Google's pricing](https://ai.google.dev/pricing) for current rates.
+- **Quality**: High-fidelity 720p videos with generated audio and cinematic visuals.
+
+**When to use videos vs images:**
+- Use **images** for fast iteration, low cost, or when you're still experimenting
+- Use **videos** for final, high-quality content when you're ready to commit time and budget
+
 ### Image Regeneration
 
 After generating all assets, you can regenerate individual images with custom prompts:
@@ -95,6 +121,7 @@ The new image will overwrite the old one in your output folder. This lets you it
 
 ## Output Structure
 
+**With Images:**
 ```
 video_20241205_143022/
 ├── narrative.txt          # Full script
@@ -103,6 +130,18 @@ video_20241205_143022/
 ├── full_narrative.mp3    # Complete audio file
 ├── scene_01.png          # First image
 ├── scene_02.png          # Second image
+└── ...
+```
+
+**With Videos:**
+```
+video_20241205_143022/
+├── narrative.txt          # Full script
+├── character_info.txt     # Character descriptions (if provided)
+├── scenes.json           # Scene data for reference
+├── full_narrative.mp3    # Complete audio file
+├── scene_01.mp4          # First video (with duration based on word count)
+├── scene_02.mp4          # Second video
 └── ...
 ```
 
