@@ -71,6 +71,17 @@ Sophia: 3-year-old granddaughter, [description]""",
         help="The AI will reference these descriptions when creating image prompts that feature these people"
     )
 
+# Art direction input (optional)
+with st.expander("🎨 Style Guide / Art Direction (Optional)", expanded=False):
+    st.markdown("Define the visual style that will be applied to **all** scene prompts. This ensures consistency across your entire video.")
+    st.markdown("💡 **Examples:** *16mm film grain, hazy atmosphere, muted colors, dreamlike soft focus, vintage aesthetic, melancholic mood*")
+    art_direction = st.text_area(
+        "Visual Style",
+        height=100,
+        placeholder="""16mm film grain, hazy atmosphere, muted desaturated colors, dreamlike soft focus, vintage 1970s aesthetic, melancholic mood, analog texture, light leaks, gentle vignetting""",
+        help="This text will be automatically appended to every scene prompt for consistent styling"
+    )
+
 # Main input
 input_text = st.text_area(
     "Stream of Consciousness",
@@ -112,7 +123,7 @@ Return only the narrative, no preamble."""
     
     return message.content[0].text
 
-def break_into_scenes(narrative, api_key, character_info=None, media_type="Images"):
+def break_into_scenes(narrative, api_key, character_info=None, media_type="Images", art_direction=None):
     """Break narrative into scenes with image/video prompts"""
     client = anthropic.Anthropic(api_key=api_key)
     
@@ -125,7 +136,31 @@ def break_into_scenes(narrative, api_key, character_info=None, media_type="Image
 CHARACTER INFORMATION (use when relevant for {char_prompt_type} prompts):
 {character_info.strip()}
 
-When a scene mentions any of these characters, incorporate their physical descriptions into the {char_prompt_type} prompt naturally.
+CRITICAL INSTRUCTIONS FOR CHARACTER CONSISTENCY:
+- When a scene mentions a character, use their COMPLETE description VERBATIM (word-for-word)
+- DO NOT paraphrase, summarize, or abbreviate character descriptions
+- DO NOT change ages, physical features, or any details
+- Copy the ENTIRE character description directly into the prompt
+- This ensures the character looks consistent across all scenes
+
+Example:
+Character info: "Dean: Moderately heavy-set man in his late 40s with short black hair and short black unkempt beard, black-framed glasses"
+CORRECT prompt: "Moderately heavy-set man in his late 40s with short black hair and short black unkempt beard, black-framed glasses standing by window"
+WRONG prompt: "Man in his 50s with beard standing by window" (too vague, changes age)
+"""
+    
+    # Build art direction context
+    art_direction_context = ""
+    if art_direction and art_direction.strip():
+        prompt_type = "video_prompt" if media_type == "Videos" else "image_prompt"
+        art_direction_context = f"""
+
+ART DIRECTION / STYLE GUIDE (CRITICAL - apply to EVERY scene):
+{art_direction.strip()}
+
+IMPORTANT: Append this style guide to the end of EVERY {prompt_type}. 
+Format: "[scene visual description]. Style: {art_direction.strip()}"
+This ensures consistent visual aesthetic across all scenes.
 """
     
     # Build media-specific instructions
@@ -155,6 +190,20 @@ CRITICAL FOR SCENE LENGTH:
 
 Example video_prompt: "Abandoned playground swingset moving gently in breeze, rusted chains, overcast sky. Slow zoom out. Ambient sounds: creaking metal, soft wind, distant birds."
 
+Example of valid JSON (COPY THIS FORMAT EXACTLY):
+[
+  {
+    "scene_number": 1,
+    "text": "The weight settles in my chest.",
+    "video_prompt": "Abstract stones sinking through dark water. Slow drift downward. Ambient sounds: deep underwater resonance, muffled pressure."
+  },
+  {
+    "scene_number": 2,
+    "text": "I breathe, but air feels thin.",
+    "video_prompt": "Translucent lungs struggling to expand in foggy void. Gentle zoom in. Ambient sounds: labored breathing, soft wind."
+  }
+]
+
 Return as JSON array with format:
 [
   {
@@ -168,8 +217,23 @@ Return as JSON array with format:
         media_instructions = """
 For each scene, provide:
 1. The text to be spoken (use only simple punctuation - periods, commas, question marks, exclamation points. No em dashes or colons)
+   NOTE: For images, scenes can be longer and more contemplative (30-60 words is fine)
 2. An IMAGE generation prompt that captures the emotional tone (abstract, contemplative, emotionally resonant - not literal). CRITICAL: The image should contain NO TEXT OR WORDS. Every concept must be represented through imagery alone, not written language.
    IMPORTANT: In the JSON, keep all prompts on a SINGLE LINE (no line breaks within strings)
+
+Example of valid JSON (COPY THIS FORMAT EXACTLY):
+[
+  {
+    "scene_number": 1,
+    "text": "The weight settles in my chest like stones in deep water. I breathe, but the air feels thin, insufficient.",
+    "image_prompt": "Abstract stones sinking through dark water, heavy descent through gradient blues, minimalist composition."
+  },
+  {
+    "scene_number": 2,
+    "text": "Each day I wake expecting her voice, the familiar cadence of morning routines we built together.",
+    "image_prompt": "Empty bed bathed in morning light, rumpled sheets suggesting recent presence, window casting long shadows."
+  }
+]
 
 Return as JSON array with format:
 [
@@ -183,17 +247,17 @@ Return as JSON array with format:
     
     message = client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens=3000,
+        max_tokens=5000,  # Increased for 20-30+ scenes
         messages=[{
             "role": "user",
             "content": f"""Break this narrative into scenes for {media_type.lower()} generation. Make sure that the entire narrative is accounted for. It is important that all text from the narrative land in a scene. 
 
 IMPORTANT SCENE COUNT GUIDANCE:
-{"- For VIDEO mode: Create 20-30+ scenes (each scene limited to 20-25 words to fit 10-second video limit)" if media_type == "Videos" else "- For IMAGE mode: Create as many scenes as the content needs (minimum 6 scenes)"}
-- Create MORE scenes rather than fewer - each distinct emotional beat or tonal shift should be its own scene
-- Don't artificially compress multiple ideas into fewer scenes - let each moment breathe
+{"- For VIDEO mode: Create 20-30+ scenes (each scene limited to 20-25 words to fit 10-second video limit)" if media_type == "Videos" else "- For IMAGE mode: Create as many scenes as the content needs (typically 8-16 scenes). Each scene can be longer and more contemplative."}
+{"- Break narrative into smaller emotional beats - each distinct moment should be its own scene" if media_type == "Videos" else "- Break narrative at major tonal shifts and emotional transitions - scenes can contain multiple related thoughts"}
+- Don't artificially compress multiple ideas into one scene, but also don't over-segment
 
-{media_instructions}{character_context}
+{media_instructions}{character_context}{art_direction_context}
 ]
 
 Narrative:
@@ -202,13 +266,19 @@ Narrative:
 CRITICAL JSON FORMATTING:
 - Return ONLY a valid JSON array, nothing else
 - NO markdown formatting, NO code blocks, NO backticks
-- Escape all quotes inside strings using backslash (\")
+- CRITICAL: Do NOT use quotation marks (") or apostrophes (') anywhere inside the prompt text - these break JSON parsing
+- Instead of quotes, use descriptive phrases (e.g., write "so-called grief" as "apparent grief")
 - NO line breaks inside string values (use spaces instead)
 - Test: Your response should start with [ and end with ]
 
 Return only the JSON array, no markdown formatting."""
         }]
     )
+    
+    # Check if response was truncated
+    if message.stop_reason == "max_tokens":
+        import streamlit as st
+        st.error("⚠️ Response was truncated (too many scenes). Try shortening your narrative or the response may be incomplete.")
     
     # Parse JSON from response
     response_text = message.content[0].text.strip()
@@ -227,15 +297,29 @@ Return only the JSON array, no markdown formatting."""
         # Show detailed error for debugging
         print(f"JSON Parse Error: {e}")
         print(f"Response length: {len(response_text)} characters")
-        print(f"First 500 chars: {response_text[:500]}")
-        print(f"Error location: {response_text[max(0, e.pos-100):min(len(response_text), e.pos+100)]}")
         
         # Try to show this in Streamlit if available
-        import streamlit as st
-        st.error(f"JSON parsing failed at position {e.pos}")
-        st.error(f"Error: {str(e)}")
-        with st.expander("Show raw response for debugging"):
-            st.code(response_text, language="json")
+        try:
+            import streamlit as st
+            st.error(f"JSON parsing failed at position {e.pos}")
+            st.error(f"Error: {str(e)}")
+            
+            # Show the problematic area
+            error_snippet = response_text[max(0, e.pos-200):min(len(response_text), e.pos+200)]
+            st.code(error_snippet, language="json")
+            
+            with st.expander("Show full raw response for debugging"):
+                st.code(response_text, language="json")
+            
+            st.warning("""**Workaround:** The AI generated invalid JSON (likely unescaped quotes in a prompt). 
+            
+Try one of these:
+1. Click "Break Into Scenes" again (it might work on retry)
+2. Simplify your art direction (remove any quotation marks)
+3. Shorten your narrative
+4. Try without art direction first""")
+        except:
+            pass
         
         raise
 
@@ -579,7 +663,8 @@ if st.session_state.narrative:
                 st.session_state.narrative, 
                 anthropic_key,
                 character_info if character_info else None,
-                media_type  # Pass the selected media type
+                media_type,  # Pass the selected media type
+                art_direction if art_direction else None  # Pass art direction
             )
 
 # Show scenes if generated
@@ -608,6 +693,30 @@ if st.session_state.scenes:
         st.caption("💡 Tip: For Pika, keep scenes under 25 words (~10 seconds) each")
         st.markdown("---")
     
+    # Add bulk operations
+    with st.expander("⚙️ Bulk Operations", expanded=False):
+        st.markdown("**Quick actions for all scenes:**")
+        
+        # Find/Replace in prompts
+        col1, col2 = st.columns(2)
+        with col1:
+            find_text = st.text_input("Find text in prompts:", key="bulk_find")
+        with col2:
+            replace_text = st.text_input("Replace with:", key="bulk_replace")
+        
+        if st.button("🔄 Replace in All Prompts", disabled=not find_text):
+            prompt_key = 'video_prompt' if 'video_prompt' in st.session_state.scenes[0] else 'image_prompt'
+            count = 0
+            for scene in st.session_state.scenes:
+                if find_text in scene[prompt_key]:
+                    scene[prompt_key] = scene[prompt_key].replace(find_text, replace_text)
+                    count += 1
+            if count > 0:
+                st.success(f"✅ Updated {count} scene(s)")
+                st.rerun()
+            else:
+                st.info("No matches found")
+    
     for scene in st.session_state.scenes:
         with st.expander(f"Scene {scene['scene_number']}", expanded=False):
             # Calculate word count
@@ -628,7 +737,42 @@ if st.session_state.scenes:
             
             # Display the prompt (could be image_prompt or video_prompt)
             prompt_label = "Video Prompt" if is_video else "Image Prompt"
-            st.markdown(f"**{prompt_label}:** {scene[prompt_key]}")
+            
+            # Create unique key for this scene's edit state
+            edit_key = f"edit_scene_{scene['scene_number']}"
+            if edit_key not in st.session_state:
+                st.session_state[edit_key] = False
+            
+            # Show prompt or edit field based on state
+            if not st.session_state[edit_key]:
+                st.markdown(f"**{prompt_label}:** {scene[prompt_key]}")
+                if st.button(f"✏️ Edit Prompt", key=f"edit_btn_{scene['scene_number']}"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
+            else:
+                # Edit mode
+                edited_prompt = st.text_area(
+                    f"{prompt_label}:",
+                    value=scene[prompt_key],
+                    height=100,
+                    key=f"prompt_edit_{scene['scene_number']}"
+                )
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 Save", key=f"save_{scene['scene_number']}", type="primary"):
+                        # Update the scene in session state
+                        for s in st.session_state.scenes:
+                            if s['scene_number'] == scene['scene_number']:
+                                s[prompt_key] = edited_prompt
+                                break
+                        st.session_state[edit_key] = False
+                        st.success(f"✅ Scene {scene['scene_number']} prompt updated!")
+                        st.rerun()
+                with col2:
+                    if st.button("❌ Cancel", key=f"cancel_{scene['scene_number']}"):
+                        st.session_state[edit_key] = False
+                        st.rerun()
     
     # Generate all assets button
     st.markdown("---")
