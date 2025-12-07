@@ -112,46 +112,99 @@ Return only the narrative, no preamble."""
     
     return message.content[0].text
 
-def break_into_scenes(narrative, api_key, character_info=None):
-    """Break narrative into scenes with image prompts"""
+def break_into_scenes(narrative, api_key, character_info=None, media_type="Images"):
+    """Break narrative into scenes with image/video prompts"""
     client = anthropic.Anthropic(api_key=api_key)
     
     # Build the prompt with optional character info
     character_context = ""
     if character_info and character_info.strip():
+        char_prompt_type = "video" if media_type == "Videos" else "image"
         character_context = f"""
 
-CHARACTER INFORMATION (use when relevant for image prompts):
+CHARACTER INFORMATION (use when relevant for {char_prompt_type} prompts):
 {character_info.strip()}
 
-When a scene mentions any of these characters, incorporate their physical descriptions into the image prompt naturally.
+When a scene mentions any of these characters, incorporate their physical descriptions into the {char_prompt_type} prompt naturally.
 """
+    
+    # Build media-specific instructions
+    if media_type == "Videos":
+        media_instructions = """
+For each scene, provide:
+1. The text to be spoken (use only simple punctuation - periods, commas, question marks, exclamation points. No em dashes or colons)
+   CRITICAL: Keep text to 20-25 words MAX per scene (to fit within 10-second video limit)
+2. A VIDEO generation prompt with THREE components:
+   a) Visual description (abstract, contemplative, emotionally resonant - not literal)
+   b) Camera movement (e.g., "slow zoom in", "gentle pan left", "drift forward", "static shot")
+   c) Ambient sounds (e.g., "soft rain, distant thunder", "crackling fire", "wind through trees", "gentle piano melody")
+   
+CRITICAL FOR VIDEO PROMPTS:
+- NO dialogue, speech, or talking in the video
+- NO text or words visible in the video
+- DO include atmospheric/environmental sounds
+- DO include camera movement suggestions
+- The video should be SILENT except for ambient audio (no voiceover)
+- IMPORTANT: In the JSON, keep all prompts on a SINGLE LINE (no line breaks within strings)
+
+CRITICAL FOR SCENE LENGTH:
+- Each scene's text should be 20-25 words maximum (roughly 8-10 seconds when spoken)
+- This means you'll need MORE SCENES than usual (20-30+ scenes is normal)
+- Break the narrative into smaller emotional beats
+- Don't compress multiple ideas into one scene
+
+Example video_prompt: "Abandoned playground swingset moving gently in breeze, rusted chains, overcast sky. Slow zoom out. Ambient sounds: creaking metal, soft wind, distant birds."
+
+Return as JSON array with format:
+[
+  {
+    "scene_number": 1,
+    "text": "...",
+    "video_prompt": "..."
+  },
+  ...
+]"""
+    else:
+        media_instructions = """
+For each scene, provide:
+1. The text to be spoken (use only simple punctuation - periods, commas, question marks, exclamation points. No em dashes or colons)
+2. An IMAGE generation prompt that captures the emotional tone (abstract, contemplative, emotionally resonant - not literal). CRITICAL: The image should contain NO TEXT OR WORDS. Every concept must be represented through imagery alone, not written language.
+   IMPORTANT: In the JSON, keep all prompts on a SINGLE LINE (no line breaks within strings)
+
+Return as JSON array with format:
+[
+  {
+    "scene_number": 1,
+    "text": "...",
+    "image_prompt": "..."
+  },
+  ...
+]"""
     
     message = client.messages.create(
         model="claude-sonnet-4-5-20250929",
         max_tokens=3000,
         messages=[{
             "role": "user",
-            "content": f"""Break this narrative into scenes for a video. Make sure that the entire narrative is accounted for. It is important that all text from the narrative land in a scene. 
+            "content": f"""Break this narrative into scenes for {media_type.lower()} generation. Make sure that the entire narrative is accounted for. It is important that all text from the narrative land in a scene. 
 
-IMPORTANT: Create as many scenes as the content actually needs. If there are lots of dramatic shifts in tone, subject, or emotion, you should create 10, 12, 15+ scenes. The minimum is 6 scenes, but that should only be used for narratives with very consistent tone. Don't artificially compress multiple ideas into fewer scenes - let each distinct moment breathe.
+IMPORTANT SCENE COUNT GUIDANCE:
+{"- For VIDEO mode: Create 20-30+ scenes (each scene limited to 20-25 words to fit 10-second video limit)" if media_type == "Videos" else "- For IMAGE mode: Create as many scenes as the content needs (minimum 6 scenes)"}
+- Create MORE scenes rather than fewer - each distinct emotional beat or tonal shift should be its own scene
+- Don't artificially compress multiple ideas into fewer scenes - let each moment breathe
 
-For each scene, provide:
-1. The text to be spoken (use only simple punctuation - periods, commas, question marks, exclamation points. No em dashes or colons)
-2. An image generation prompt that captures the emotional tone (abstract, contemplative, emotionally resonant - not literal). CRITICAL: The image should contain NO TEXT OR WORDS. Every concept must be represented through imagery alone, not written language.{character_context}
-
-Return as JSON array with format:
-[
-  {{
-    "scene_number": 1,
-    "text": "...",
-    "image_prompt": "..."
-  }},
-  ...
+{media_instructions}{character_context}
 ]
 
 Narrative:
 {narrative}
+
+CRITICAL JSON FORMATTING:
+- Return ONLY a valid JSON array, nothing else
+- NO markdown formatting, NO code blocks, NO backticks
+- Escape all quotes inside strings using backslash (\")
+- NO line breaks inside string values (use spaces instead)
+- Test: Your response should start with [ and end with ]
 
 Return only the JSON array, no markdown formatting."""
         }]
@@ -159,13 +212,32 @@ Return only the JSON array, no markdown formatting."""
     
     # Parse JSON from response
     response_text = message.content[0].text.strip()
+    
     # Remove markdown code blocks if present
     if response_text.startswith('```'):
         response_text = response_text.split('```')[1]
         if response_text.startswith('json'):
             response_text = response_text[4:]
+        response_text = response_text.strip()
     
-    return json.loads(response_text.strip())
+    # Try to parse JSON with better error handling
+    try:
+        return json.loads(response_text.strip())
+    except json.JSONDecodeError as e:
+        # Show detailed error for debugging
+        print(f"JSON Parse Error: {e}")
+        print(f"Response length: {len(response_text)} characters")
+        print(f"First 500 chars: {response_text[:500]}")
+        print(f"Error location: {response_text[max(0, e.pos-100):min(len(response_text), e.pos+100)]}")
+        
+        # Try to show this in Streamlit if available
+        import streamlit as st
+        st.error(f"JSON parsing failed at position {e.pos}")
+        st.error(f"Error: {str(e)}")
+        with st.expander("Show raw response for debugging"):
+            st.code(response_text, language="json")
+        
+        raise
 
 def generate_video(prompt, scene_text, api_key, scene_num, output_folder, status_callback=None):
     """Generate video using Veo with extensions to reach target duration"""
@@ -506,7 +578,8 @@ if st.session_state.narrative:
             st.session_state.scenes = break_into_scenes(
                 st.session_state.narrative, 
                 anthropic_key,
-                character_info if character_info else None
+                character_info if character_info else None,
+                media_type  # Pass the selected media type
             )
 
 # Show scenes if generated
@@ -514,10 +587,48 @@ if st.session_state.scenes:
     st.markdown("---")
     st.subheader("🎬 Scene Breakdown")
     
+    # Show summary stats for video mode
+    if st.session_state.scenes and 'video_prompt' in st.session_state.scenes[0]:
+        total_scenes = len(st.session_state.scenes)
+        long_scenes = [s for s in st.session_state.scenes if len(s['text'].split()) > 25]
+        total_words = sum(len(s['text'].split()) for s in st.session_state.scenes)
+        est_total_duration = round(total_words / 2.5, 1)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Scenes", total_scenes)
+        with col2:
+            st.metric("Estimated Total Duration", f"{est_total_duration}s")
+        with col3:
+            if long_scenes:
+                st.metric("Scenes >25 words", len(long_scenes), delta="⚠️ May need splitting")
+            else:
+                st.metric("Scenes >25 words", "0", delta="✅ All fit in 10s")
+        
+        st.caption("💡 Tip: For Pika, keep scenes under 25 words (~10 seconds) each")
+        st.markdown("---")
+    
     for scene in st.session_state.scenes:
         with st.expander(f"Scene {scene['scene_number']}", expanded=False):
+            # Calculate word count
+            word_count = len(scene['text'].split())
+            est_duration = round(word_count / 2.5, 1)
+            
+            # Show text with word count
             st.markdown(f"**Text:** {scene['text']}")
-            st.markdown(f"**Image Prompt:** {scene['image_prompt']}")
+            
+            # Show word count with warning if needed for video mode
+            prompt_key = 'video_prompt' if 'video_prompt' in scene else 'image_prompt'
+            is_video = prompt_key == 'video_prompt'
+            
+            if is_video and word_count > 25:
+                st.warning(f"⚠️ {word_count} words (~{est_duration}s) - May exceed 10-second Pika limit. Consider splitting this scene.")
+            else:
+                st.caption(f"📊 {word_count} words (~{est_duration}s estimated duration)")
+            
+            # Display the prompt (could be image_prompt or video_prompt)
+            prompt_label = "Video Prompt" if is_video else "Image Prompt"
+            st.markdown(f"**{prompt_label}:** {scene[prompt_key]}")
     
     # Generate all assets button
     st.markdown("---")
@@ -555,6 +666,10 @@ if st.session_state.scenes:
         for i, scene in enumerate(st.session_state.scenes):
             scene_num = scene['scene_number']
             
+            # Get the appropriate prompt key based on what's in the scene
+            prompt_key = 'video_prompt' if 'video_prompt' in scene else 'image_prompt'
+            prompt = scene[prompt_key]
+            
             if media_type == "Videos":
                 status_text.text(f"🎥 Generating video {i+1}/{len(st.session_state.scenes)} (scene {scene_num})...")
                 try:
@@ -562,7 +677,7 @@ if st.session_state.scenes:
                         status_text.caption(msg)
                     
                     video_path, final_duration = generate_video(
-                        scene['image_prompt'], 
+                        prompt, 
                         scene['text'],
                         google_key, 
                         scene_num, 
@@ -578,7 +693,7 @@ if st.session_state.scenes:
             else:  # Images
                 status_text.text(f"🎨 Generating image {i+1}/{len(st.session_state.scenes)} (scene {scene_num})...")
                 try:
-                    generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
+                    generate_image(prompt, google_key, scene_num, output_folder)
                     progress_bar.progress((i + 1) / (len(st.session_state.scenes) + 1))
                 except Exception as e:
                     st.error(f"❌ Error generating image for scene {scene_num}: {str(e)}")
@@ -606,12 +721,16 @@ if st.session_state.scenes:
             retry_failures = []
             for scene_num in failed_images:
                 scene = next(s for s in st.session_state.scenes if s['scene_number'] == scene_num)
+                # Get the appropriate prompt key
+                prompt_key = 'video_prompt' if 'video_prompt' in scene else 'image_prompt'
+                prompt = scene[prompt_key]
+                
                 status_text.text(f"🔄 Retrying {media_type.lower()[:-1]} for scene {scene_num}...")
                 try:
                     if media_type == "Videos":
-                        generate_video(scene['image_prompt'], scene['text'], google_key, scene_num, output_folder)
+                        generate_video(prompt, scene['text'], google_key, scene_num, output_folder)
                     else:
-                        generate_image(scene['image_prompt'], google_key, scene_num, output_folder)
+                        generate_image(prompt, google_key, scene_num, output_folder)
                     st.success(f"✅ Successfully generated {media_type.lower()[:-1]} for scene {scene_num} on retry")
                 except Exception as e:
                     st.error(f"❌ Scene {scene_num} failed again: {str(e)}")
@@ -661,7 +780,9 @@ if st.session_state.output_folder:
             
             with col_a:
                 with st.expander("📋 Current prompt for this scene", expanded=False):
-                    st.code(current_scene['image_prompt'], language=None)
+                    # Get the appropriate prompt key
+                    prompt_key = 'video_prompt' if 'video_prompt' in current_scene else 'image_prompt'
+                    st.code(current_scene[prompt_key], language=None)
             
             with col_b:
                 # Show current image if it exists
